@@ -1,5 +1,6 @@
 plugins {
     `config-kotlin`
+    `maven-publish`
 }
 
 dependencies {
