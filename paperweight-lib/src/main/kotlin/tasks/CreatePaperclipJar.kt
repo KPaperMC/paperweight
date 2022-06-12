@@ -319,7 +319,7 @@ abstract class CreatePaperclipJar : JavaLauncherZippedTask() {
                 }
                 return base.resolve(path)
             }
-        };``
+        };
 
         abstract fun resolve(dir: Path, path: String? = null): Path
 
