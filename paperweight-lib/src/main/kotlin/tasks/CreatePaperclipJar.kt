@@ -26,6 +26,7 @@ import io.papermc.paperweight.PaperweightException
 import io.papermc.paperweight.util.*
 import io.papermc.paperweight.util.data.*
 import io.sigpipe.jbsdiff.Diff
+import java.io.File
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.security.MessageDigest
@@ -33,6 +34,7 @@ import java.security.NoSuchAlgorithmException
 import java.util.StringJoiner
 import javax.inject.Inject
 import kotlin.io.path.*
+import org.gradle.api.Project
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.Property
@@ -142,7 +144,7 @@ abstract class CreatePaperclipJar : JavaLauncherZippedTask() {
             }
 
             // Both jars have these versions, but they are different, so we need to create a patch
-            patchJobs += queue.submitPatchJob(rootDir, originalBundlerRoot, newBundlerRoot, originalVersion, newVersion, EntryLocation.VERSION)
+            patchJobs += queue.submitPatchJob(rootDir, originalBundlerRoot, newBundlerRoot, originalVersion, newVersion, EntryLocation.VERSION, project.buildDir)
         }
 
         // Remove library jars we don't need
@@ -154,7 +156,7 @@ abstract class CreatePaperclipJar : JavaLauncherZippedTask() {
 
             if (newLibrary.hash != originalLibrary.hash) {
                 // Create patch for this library as well
-                patchJobs += queue.submitPatchJob(rootDir, originalBundlerRoot, newBundlerRoot, originalLibrary, newLibrary, EntryLocation.LIBRARY)
+                patchJobs += queue.submitPatchJob(rootDir, originalBundlerRoot, newBundlerRoot, originalLibrary, newLibrary, EntryLocation.LIBRARY, project.buildDir)
             } else {
                 // The original bundler contains the right file, we don't need ours
                 EntryLocation.LIBRARY.removeEntry(rootDir, newLibrary.path)
@@ -168,7 +170,7 @@ abstract class CreatePaperclipJar : JavaLauncherZippedTask() {
             val newLibrary = newLibraries.firstOrNull { it.id == libraryChange.outputId }
                 ?: throw PaperweightException("Unmatched library change, new id: ${libraryChange.outputId}")
 
-            patchJobs += queue.submitPatchJob(rootDir, originalBundlerRoot, newBundlerRoot, originalLibrary, newLibrary, EntryLocation.LIBRARY)
+            patchJobs += queue.submitPatchJob(rootDir, originalBundlerRoot, newBundlerRoot, originalLibrary, newLibrary, EntryLocation.LIBRARY, project.buildDir)
         }
 
         queue.await()
@@ -177,14 +179,17 @@ abstract class CreatePaperclipJar : JavaLauncherZippedTask() {
         return patchJobs.map { job ->
             val patchLocation = job.entryLocation.resolve(rootDir)
 
-            val patchHash = job.patchFile.sha256asHex()
+            val patchHash = if(job.entryLocation == EntryLocation.LIBRARY) job.patchFile.sha256asHex() else ""
             PatchEntry(
                 job.entryLocation,
                 job.originalEntry.hash,
                 patchHash,
                 job.newEntry.hash,
                 job.originalEntry.path,
-                job.patchFile.relativeTo(patchLocation).invariantSeparatorsPathString,
+                if(job.entryLocation == EntryLocation.VERSION)
+                    "https://raw.githubusercontent.com/KPaperMC/KPaper/main/${job.patchFile.fileName}"
+                else
+                    job.patchFile.relativeTo(patchLocation).invariantSeparatorsPathString,
                 job.newEntry.path
             )
         }
@@ -196,7 +201,8 @@ abstract class CreatePaperclipJar : JavaLauncherZippedTask() {
         newRoot: Path,
         originalEntry: FileEntry<*>,
         newEntry: FileEntry<*>,
-        location: EntryLocation
+        location: EntryLocation,
+        buildPath: File
     ): PatchJob {
         val outputFile = location.resolve(rootDir, newEntry.path)
         outputFile.deleteForcefully()
@@ -216,6 +222,8 @@ abstract class CreatePaperclipJar : JavaLauncherZippedTask() {
             this.originalFile.set(tempOriginal)
             this.patchedFile.set(tempNew)
             this.outputFile.set(patchFile)
+            this.target.set(if(location == EntryLocation.VERSION) "version" else "library")
+            this.buildPath.set(buildPath)
         }
 
         return PatchJob(originalEntry, newEntry, patchFile, location)
@@ -226,6 +234,8 @@ abstract class CreatePaperclipJar : JavaLauncherZippedTask() {
             val outputFile = parameters.outputFile.path
             val originalFile = parameters.originalFile.path
             val patchedFile = parameters.patchedFile.path
+            val entryLocation = parameters.target.get()
+            val project = parameters.buildPath.path
 
             // Read the files into memory
             val originalBytes = parameters.originalFile.path.readBytes()
@@ -233,9 +243,14 @@ abstract class CreatePaperclipJar : JavaLauncherZippedTask() {
 
             try {
                 outputFile.parent.createDirectories()
-                outputFile.outputStream().use { patchOutput ->
-                    Diff.diff(originalBytes, patchedBytes, patchOutput)
-                }
+                if(entryLocation == "version")
+                    project.toFile().resolve(outputFile.toFile().name).toPath().outputStream().use { patchOutput ->
+                        Diff.diff(originalBytes, patchedBytes, patchOutput)
+                    }
+                else
+                    outputFile.outputStream().use { patchOutput ->
+                        Diff.diff(originalBytes, patchedBytes, patchOutput)
+                    }
             } catch (e: Exception) {
                 throw PaperweightException("Error creating patch between $originalFile and $patchedFile", e)
             } finally {
@@ -249,6 +264,8 @@ abstract class CreatePaperclipJar : JavaLauncherZippedTask() {
         val originalFile: RegularFileProperty
         val patchedFile: RegularFileProperty
         val outputFile: RegularFileProperty
+        val target: Property<String>
+        val buildPath: RegularFileProperty
     }
 
     data class PatchJob(
@@ -302,7 +319,7 @@ abstract class CreatePaperclipJar : JavaLauncherZippedTask() {
                 }
                 return base.resolve(path)
             }
-        };
+        };``
 
         abstract fun resolve(dir: Path, path: String? = null): Path
 
